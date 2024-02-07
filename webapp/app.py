@@ -4,12 +4,17 @@ import logging
 import logging.config
 logging.getLogger().setLevel(logging.DEBUG)
 
+
+from os.path import expanduser
+home = expanduser("~")
+
+
 app_ui = ui.page_fluid(
     # Application title
     ui.panel_title("Backtest"),
     
     ui.row(
-        ui.input_text("symbol", "Symbol", value="SPY"),
+        ui.input_text("symbol", "Symbol", value="AAPL"),
         ui.input_select("type", "Type", 
                         {"auto": "auto", "candlesticks": "candlesticks", "matchsticks": "matchsticks", "bars": "bars", "line": "line"},
                         selected="auto"),
@@ -118,6 +123,7 @@ import pandas as pd
 import yfinance as yf
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
+import pandas_ta as ta
 
 # Define the server logic
 def server(input, output, session):
@@ -129,7 +135,7 @@ def server(input, output, session):
         ('Close', 'last'),
         ('Volume', 'sum'),
     ))
-    session.kdata = pd.read_csv(r'C:\Users\Juan\repos\backtest-webapp\webapp\BTCUSDT_1m.csv', parse_dates=True, index_col=0)
+    session.kdata = pd.read_csv(home + r'\repos\backtesting-webapp\webapp\BTCUSDT_1m.csv', parse_dates=True, index_col=0)
     session.kdata = session.kdata.resample('60T').agg(ohlcv_agg)
     
     session.kdata = (session.kdata / 1e3).assign(Volume=session.kdata.Volume * 1e3) # mBTC OHLC prices
@@ -180,7 +186,10 @@ def server(input, output, session):
             strSpan = f"{fromDate}::"
         else:
             strSpan = f"{fromDate}::{toDate}"
-        logging.info((fromDate, toDate, strSpan))
+        logging.info(("fromDate, toDate, strSpan", fromDate, toDate, strSpan))
+        session.fromDate = fromDate
+        session.toDate = toDate
+        session.strSpan = strSpan
         return fromDate, toDate, strSpan
     
     @reactive.effect
@@ -209,101 +218,176 @@ def server(input, output, session):
         strSpan2 = f"{date1.strftime('%Y-%m-%d')}::{date2.strftime('%Y-%m-%d')}"
         
         logging.info((date1, date2, strSpan2))
+        session.date1 = date1
+        session.date2 = date2
         session.strSpan2 = strSpan2
         return strSpan2
-    
 
-    def bt1Plot(gdata, gsymbol, plot_type='line', theme='classic', volume=False, mav=(None, None)):
-        """
-        A simplified plotting function using matplotlib.pyplot.
-
-        Parameters:
-        - gdata: DataFrame containing the stock data with a DateTimeIndex.
-        - gsymbol: The symbol of the stock being plotted.
-        - plot_type: Type of plot ('line' for line plot, 'candle' for candlestick, but candlestick requires mplfinance).
-        - theme: Plot theme ('classic' for white background, 'dark' for dark background).
-        - volume: Whether to plot volume data (True/False). This example does not include volume plotting.
-        - mav: Tuple of moving average periods, e.g., (20, 50) for 20 and 50 periods.
-        """
+    @reactive.Effect
+    def get_data():
+        symbol = input.symbol()
         
-        # Setting the plot theme
-        if theme == 'dark':
-            plt.style.use('dark_background')
+        # Adjusting the symbol if it starts with "^"
+        gsymbol = symbol[1:] if symbol.startswith("^") else symbol
+        
+        # Fetching the data from Yahoo Finance
+        # data = yf.Ticker(gsymbol)
+        gdata = yf.download(gsymbol, start=session.fromDate, end=session.toDate)
+        
+        # Storing the fetched data and additional info in the session
+        session.gdata = gdata
+        session.gsymbol = gsymbol
+        
+        # Extracting start dates from the data
+        if not gdata.empty:
+            session.gstart0 = gdata.index[0].date()
+            ival1 = input.ival1()
+            # Ensure ival1 is within the range before accessing the index
+            if ival1 is not None and 0 <= ival1 < len(gdata):
+                session.gstart1 = gdata.index[ival1].date()
+            else:
+                session.gstart1 = gdata.index[0].date()
+
+
+    @reactive.Effect
+    def bt1data():
+        # Ensure getData() and getSpan() have been called and processed
+        # session.strSpan = getSpan()
+        
+        # Accessing global data (assuming gdata is stored in the session by getData())
+        gdata = session.gdata
+
+        logging.debug(gdata.columns)
+        
+        # Adjusting the 'Close' column based on 'adjusted' input
+        Close = gdata['Adj Close'] if input.adjusted() else gdata['Close']
+        
+        # Calculating long and short moving averages
+        if input.ilab1() == "SMA":
+            longMA = ta.overlap.sma(Close, n=input.ival1())
         else:
-            plt.style.use('classic')
+            longMA = ta.overlap.ema(Close, n=input.ival1())
 
-        # Preparing data
-        dates = gdata.index
-        close_prices = gdata['Close']
+        if input.ilab2() == "SMA":
+            shrtMA = ta.overlap.sma(Close, n=input.ival2())
+        else:
+            shrtMA = ta.overlap.ema(Close, n=input.ival2())
 
-        # Creating the plot
-        fig, ax = plt.subplots(figsize=(10, 6))
+        logging.debug((longMA.shape, shrtMA.shape))
+        
+        # Combining data with long and short MAs
+        hdata = pd.concat([gdata, longMA.rename('longMA'), shrtMA.rename('shrtMA')], axis=1)
+        
+        # Calculating flags based on MA crossovers
+        flag = (hdata['shrtMA'] > hdata['longMA']).astype(int)
+        flag[flag.isna()] = -1
+        lag1 = flag.shift(1).fillna(-1)
+        lag2 = flag.shift(2).fillna(-1)
+        
+        # Merging flags and lags with the main data
+        hdata = pd.concat([hdata, flag.rename('flag'), lag1.rename('lag1'), lag2.rename('lag2')], axis=1)
+        
+        # Filter data based on strSpan
+        idata = hdata.loc[session.fromDate:session.toDate]
+        # Further calculations and manipulations...
+        # This section needs to be adjusted based on the actual logic you need to implement,
+        # as the original R code involves complex operations specific to financial data analysis.
+        
+        # Store the processed data back in the session for global access
+        session.hdata = hdata
+        session.idata = idata
 
-        # Plotting the 'Close' prices
-        ax.plot(dates, close_prices, label=f'{gsymbol} Close', color='blue')
+    # def bt1Plot(gdata, gsymbol, plot_type='line', theme='classic', volume=False, mav=(None, None)):
+    #     """
+    #     A simplified plotting function using matplotlib.pyplot.
 
-        # Plotting moving averages if specified
-        if mav[0]:
-            gdata['MA' + str(mav[0])] = gdata['Close'].rolling(window=mav[0]).mean()
-            ax.plot(dates, gdata['MA' + str(mav[0])], label=f'{mav[0]}-period MA', color='orange')
-        if mav[1]:
-            gdata['MA' + str(mav[1])] = gdata['Close'].rolling(window=mav[1]).mean()
-            ax.plot(dates, gdata['MA' + str(mav[1])], label=f'{mav[1]}-period MA', color='green')
+    #     Parameters:
+    #     - gdata: DataFrame containing the stock data with a DateTimeIndex.
+    #     - gsymbol: The symbol of the stock being plotted.
+    #     - plot_type: Type of plot ('line' for line plot, 'candle' for candlestick, but candlestick requires mplfinance).
+    #     - theme: Plot theme ('classic' for white background, 'dark' for dark background).
+    #     - volume: Whether to plot volume data (True/False). This example does not include volume plotting.
+    #     - mav: Tuple of moving average periods, e.g., (20, 50) for 20 and 50 periods.
+    #     """
+        
+    #     # Setting the plot theme
+    #     if theme == 'dark':
+    #         plt.style.use('dark_background')
+    #     else:
+    #         plt.style.use('classic')
 
-        # Customizing the plot
-        ax.set_title(f'{gsymbol} Closing Prices')
-        ax.set_xlabel('Date')
-        ax.set_ylabel('Price')
-        ax.legend()
+    #     # Preparing data
+    #     dates = gdata.index
+    #     close_prices = gdata['Close']
 
-        # Showing the plot
-        plt.show()
+    #     # Creating the plot
+    #     fig, ax = plt.subplots(figsize=(10, 6))
+
+    #     # Plotting the 'Close' prices
+    #     ax.plot(dates, close_prices, label=f'{gsymbol} Close', color='blue')
+
+    #     # Plotting moving averages if specified
+    #     if mav[0]:
+    #         gdata['MA' + str(mav[0])] = gdata['Close'].rolling(window=mav[0]).mean()
+    #         ax.plot(dates, gdata['MA' + str(mav[0])], label=f'{mav[0]}-period MA', color='orange')
+    #     if mav[1]:
+    #         gdata['MA' + str(mav[1])] = gdata['Close'].rolling(window=mav[1]).mean()
+    #         ax.plot(dates, gdata['MA' + str(mav[1])], label=f'{mav[1]}-period MA', color='green')
+
+    #     # Customizing the plot
+    #     ax.set_title(f'{gsymbol} Closing Prices')
+    #     ax.set_xlabel('Date')
+    #     ax.set_ylabel('Price')
+    #     ax.legend()
+
+    #     # Showing the plot
+    #     plt.show()
 
     
     
-    @render.plot
-    def bt1Plot2():
-        # Assuming bt1data() and getSpan2() are functions that prepare the data and set global variables or session state
-        # bt1data()  # Prepare the data
-        # getSpan2()  # Update session or global variables for the span
-        gdata = session.kdata
-        gsymbol = input.symbol()
-        plot_type='line'
-        theme='classic'
-        volume=False
-        mav=(None, None)
-        # Now, generate and render the plot. This assumes bt1Plot() is adapted to Python and returns a Matplotlib figure
-        # fig = bt1Plot(session.kdata, input.symbol())
-        # Setting the plot theme
-        if theme == 'dark':
-            plt.style.use('dark_background')
-        else:
-            plt.style.use('classic')
+    # @render.plot
+    # def bt1Plot2():
+    #     # Assuming bt1data() and getSpan2() are functions that prepare the data and set global variables or session state
+    #     # bt1data()  # Prepare the data
+    #     # getSpan2()  # Update session or global variables for the span
+    #     gdata = session.kdata
+    #     gsymbol = input.symbol()
+    #     plot_type='line'
+    #     theme='classic'
+    #     volume=False
+    #     mav=(None, None)
+    #     # Now, generate and render the plot. This assumes bt1Plot() is adapted to Python and returns a Matplotlib figure
+    #     # fig = bt1Plot(session.kdata, input.symbol())
+    #     # Setting the plot theme
+    #     if theme == 'dark':
+    #         plt.style.use('dark_background')
+    #     else:
+    #         plt.style.use('classic')
 
-        # Preparing data
-        dates = gdata.index
-        close_prices = gdata['Close']
+    #     # Preparing data
+    #     dates = gdata.index
+    #     close_prices = gdata['Close']
 
-        # Creating the plot
-        fig, ax = plt.subplots(figsize=(10, 6))
+    #     # Creating the plot
+    #     fig, ax = plt.subplots(figsize=(10, 6))
 
-        # Plotting the 'Close' prices
-        ax.plot(dates, close_prices, label=f'{gsymbol} Close', color='blue')
+    #     # Plotting the 'Close' prices
+    #     ax.plot(dates, close_prices, label=f'{gsymbol} Close', color='blue')
 
-        # Plotting moving averages if specified
-        if mav[0]:
-            gdata['MA' + str(mav[0])] = gdata['Close'].rolling(window=mav[0]).mean()
-            ax.plot(dates, gdata['MA' + str(mav[0])], label=f'{mav[0]}-period MA', color='orange')
-        if mav[1]:
-            gdata['MA' + str(mav[1])] = gdata['Close'].rolling(window=mav[1]).mean()
-            ax.plot(dates, gdata['MA' + str(mav[1])], label=f'{mav[1]}-period MA', color='green')
+    #     # Plotting moving averages if specified
+    #     if mav[0]:
+    #         gdata['MA' + str(mav[0])] = gdata['Close'].rolling(window=mav[0]).mean()
+    #         ax.plot(dates, gdata['MA' + str(mav[0])], label=f'{mav[0]}-period MA', color='orange')
+    #     if mav[1]:
+    #         gdata['MA' + str(mav[1])] = gdata['Close'].rolling(window=mav[1]).mean()
+    #         ax.plot(dates, gdata['MA' + str(mav[1])], label=f'{mav[1]}-period MA', color='green')
 
-        # Customizing the plot
-        ax.set_title(f'{gsymbol} Closing Prices')
-        ax.set_xlabel('Date')
-        ax.set_ylabel('Price')
-        ax.legend()
-        return fig
+    #     # Customizing the plot
+    #     ax.set_title(f'{gsymbol} Closing Prices')
+    #     ax.set_xlabel('Date')
+    #     ax.set_ylabel('Price')
+    #     ax.legend()
+    #     return fig
 
         
 # Create the app with UI and server logic
