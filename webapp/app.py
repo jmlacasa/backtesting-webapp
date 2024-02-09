@@ -2,7 +2,8 @@ from shiny import ui
 import datetime
 import logging
 import logging.config
-logging.getLogger().setLevel(logging.DEBUG)
+logging.getLogger().setLevel(logging.INFO)
+
 
 
 from os.path import expanduser
@@ -124,6 +125,7 @@ import yfinance as yf
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import pandas_ta as ta
+import mplfinance as mpf
 
 # Define the server logic
 def server(input, output, session):
@@ -210,7 +212,7 @@ def server(input, output, session):
             indx2 = len(kdata) - 1
         
         # Assuming kdata has a datetime index or a 'date' column for extracting date values
-        logging.debug((indx1, indx2, len(kdata)))
+        logging.info((indx1, indx2, len(kdata)))
         date1 = kdata.index[indx1] if hasattr(kdata, 'index') else kdata['date'].iloc[indx1]
         date2 = kdata.index[indx2] if hasattr(kdata, 'index') else kdata['date'].iloc[indx2]
         
@@ -248,7 +250,7 @@ def server(input, output, session):
             else:
                 session.gstart1 = gdata.index[0].date()
 
-
+    
     @reactive.Effect
     def bt1data():
         # Ensure getData() and getSpan() have been called and processed
@@ -257,7 +259,7 @@ def server(input, output, session):
         # Accessing global data (assuming gdata is stored in the session by getData())
         gdata = session.gdata
 
-        logging.debug(gdata.columns)
+        logging.info(gdata.columns)
         
         # Adjusting the 'Close' column based on 'adjusted' input
         Close = gdata['Adj Close'] if input.adjusted() else gdata['Close']
@@ -273,7 +275,7 @@ def server(input, output, session):
         else:
             shrtMA = ta.overlap.ema(Close, n=input.ival2())
 
-        logging.debug((longMA.shape, shrtMA.shape))
+        logging.info((longMA.shape, shrtMA.shape))
         
         # Combining data with long and short MAs
         hdata = pd.concat([gdata, longMA.rename('longMA'), shrtMA.rename('shrtMA')], axis=1)
@@ -297,6 +299,80 @@ def server(input, output, session):
         session.hdata = hdata
         session.idata = idata
 
+    @render.plot
+    def bt1Plot1():
+        # Assuming 'hdata' and other necessary data are stored in the session
+        hdata = session.hdata
+        gdata = session.gdata
+        gsymbol = session.gsymbol
+        # span = session.strSpan.split("::")
+        
+        # Subset gdata according to 'span'
+        idata = gdata.loc[session.fromDate:session.toDate]
+        
+        # Handling technical analysis overlays
+        tas = {}
+        if input.ilab1() == "SMA":
+            tas["SMA"] = pd.Series(idata['Close']).rolling(window=input.ival1()).mean()
+        else:
+            tas["EMA"] = pd.Series(idata['Close']).ewm(span=input.ival1()).mean()
+
+        if input.ilab2() == "SMA":
+            tas["SMA2"] = pd.Series(idata['Close']).rolling(window=input.ival2()).mean()
+        else:
+            tas["EMA2"] = pd.Series(idata['Close']).ewm(span=input.ival2()).mean()
+        
+        # Plotting
+        apds = [mpf.make_addplot(tas[key], color='orange' if 'SMA' in key else 'green') for key in tas]
+        
+        logging.info(session.idata.head())
+        fig, axlist = mpf.plot(session.idata, 
+                type= 'line',
+                # type=input.type(), 
+                # style=input.theme(), 
+                # addplot=apds, 
+                volume=input.volume(), 
+                # mav=(input.ival1(), input.ival2()) if input.ilab1() == "SMA" or input.ilab2() == "SMA" else None,
+                mav = (3, 6, 9),
+                tight_layout=True,
+                # title=gsymbol,
+                returnfig=True)
+        logging.info((type(fig), fig, axlist))
+        
+        # create fig with various axes matplotlib
+        # fig, ax = plt.subplots(2, 1, sharex=True, gridspec_kw={'height_ratios': [3, 1]})
+        # fig, ax = plt.subplots()
+        # ax[0].plot(session.idata.index, session.idata['Close'], label='Close')
+        # ax.plot(session.idata.index, tas['SMA'], label='SMA')
+
+
+        # logging.info(('findthis: ',type(fig), fig, ax))
+        
+        return fig
+    
+    
+    def bt1Plot12():
+        # bt1data()  # Prepare the data
+
+        # Debugging output to console, similar to cat() in R
+        print(
+            f"{input.symbol()}|{input.type()}|{input.theme()}#"
+            f"{input.ilab1()}|{input.icol1()}|{input.ival1()}|{input.imin1()}|{input.imax1()}|{input.istp1()}#"
+            f"{input.ilab2()}|{input.icol2()}|{input.ival2()}|{input.imin2()}|{input.imax2()}|{input.istp2()}#"
+            f"{input.calc()}#"
+            f"{input.adjusted()}|{input.volume()}|{input.logscale()}|{input.bollinger()}|{input.multicol()}#"
+            f"{input.dateRange()[0]}|{input.dateRange()[1]}|{input.span()}#"
+            f"{input.trade()}|{input.itrade()}|{input.ntrade()}\n"
+        )
+
+        indx1 = input.itrade()
+        indx2 = input.itrade() + input.ntrade()
+        
+        # Generate the plot using a function adapted to Python
+        # This assumes bt1Plot has been adapted as a Python function that can handle plotting directly
+        return bt1Plot()
+    
+    
     # def bt1Plot(gdata, gsymbol, plot_type='line', theme='classic', volume=False, mav=(None, None)):
     #     """
     #     A simplified plotting function using matplotlib.pyplot.
