@@ -19,16 +19,7 @@ logging.basicConfig(level=logging.INFO)
 #GET STOCK DATA
 
 TITLE = "PyShiny Financial Stock Analyzer"
-symbol = 'AAPL'
 period = '1y'
-window_mavg_short = 30
-window_mavg_long = 90
-
-stock = yf.Ticker(symbol)
-stock_info = stock.info
-stock_incomestmt = stock.incomestmt
-stock_history = stock.history(period=period)
-
 
 # FUNCTIONS
 
@@ -55,6 +46,24 @@ def make_plotly_chart(stock_history, window_mavg_short=30, window_mavg_long=90):
 
     return fig
 
+def my_card(title, value, width=4, bg_color="bg-info", text_color="text-white"):
+    """
+    Generate a bootstrap card
+    """
+    card_ui = ui.div(
+        ui.div(
+            ui.div(
+                ui.div(ui.h4(title), class_="card-title"),
+                ui.div(value, class_="card-text"),
+                class_="card-body flex-fill"
+            ),
+            class_=f"card {bg_color} {text_color}",
+            style=f"flex-grow: 1; margin:5px;"
+        ),
+        class_ = f"col-md-{width} d-flex"
+    )
+
+    return card_ui
 
 page_dependencies  = ui.tags.head(
     ui.tags.link(rel="stylesheet", type="text/css", href="style.css"),
@@ -78,11 +87,11 @@ app_ui = ui.page_navbar(
             ui.navset_card_pill(
                 ui.nav_panel(
                     "Company Summary",
-                    "TODO - Company Summary"
+                    ui.output_ui("stock_info_ui")
                 ),
                 ui.nav_panel(
-                    "Chart",
-                    "TODO - CHart"
+                    "Income Statement",
+                    ui.output_table("income_statement_table")
                 )
             )
         )
@@ -116,6 +125,38 @@ def server(input, output, session):
         fig = make_plotly_chart(stock_history, window_mavg_short=30, window_mavg_long=90)
         logging.info(f"fig: {fig}")
         return go.FigureWidget(fig)
+    
+    @render.ui
+    def stock_info_ui():
+        app_ui = ui.row(
+            ui.h5("Company Information"),
+            my_card("Industry", stock().info['industry'], bg_color='bg-dark'),
+            my_card("Fulltime Employees", "{}".format(stock().info['fullTimeEmployees']), bg_color='bg-dark'),
+            my_card("Website", ui.a(stock().info['website'], href=stock().info['website'], target_='blank'), bg_color='bg-dark'),
+            
+            ui.tags.hr(),
+
+            # Financial Ratios
+            ui.h5("Financial Ratios"),
+            my_card("Profit Margin", f"{stock().info['profitMargins']:.1%}", bg_color='bg-primary'),
+            my_card("Revenue Growth", f"{stock().info['revenueGrowth']:.1%}", bg_color='bg-primary'),
+            my_card("Current Ratio", f"{stock().info['currentRatio']:.2f}", bg_color='bg-primary'),
+
+            ui.tags.hr(),
+
+            # Financial Operations
+            ui.h5("Financial Operations"),
+            my_card("Total Revenue", f"${stock().info['totalRevenue']:,.0f}", bg_color='bg-info'),
+            my_card("EBITDA", f"${stock().info['ebitda']:,}", bg_color='bg-info'),
+            my_card("Operating Cash Flow", f"${stock().info['operatingCashflow']:,.0f}", bg_color='bg-info'),
+
+
+        )
+        return app_ui
+    
+    @render.table
+    def income_statement_table():
+        return stock().incomestmt.reset_index()
 
 www_dir = Path(__file__).parent / "www"
 app = App(app_ui, server, static_assets=www_dir)
